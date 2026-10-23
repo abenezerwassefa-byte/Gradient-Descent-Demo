@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Learning rate in 3D</title>
+<style>
+:root{color-scheme:dark;--ink:#e4e4e4;--mute:#7e7e7e;--line:#262626;--glow:0 0 3px rgba(255,255,255,.5),0 0 14px rgba(255,255,255,.2);
+box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*{box-sizing:border-box}
+body{margin:0;background:#000;color:var(--ink);font:14px/1.6 ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+background-image:radial-gradient(ellipse at 50% 0,rgba(255,255,255,.07),transparent 60%)}
+main{max-width:1040px;margin:0 auto;padding:28px 16px 36px}
+header{margin-bottom:18px}
+h1{font:200 clamp(30px,6vw,60px)/1 "Helvetica Neue","Arial Narrow",Arial,sans-serif;letter-spacing:.16em;margin:0 0 12px;text-shadow:var(--glow)}
+p.sub{margin:0;color:var(--mute);max-width:60ch}
+#stage{position:relative;height:min(66vh,560px);min-height:340px;border:1px solid #9a9a9a;border-radius:3px;overflow:hidden;touch-action:none;cursor:grab;background:#000;
+box-shadow:0 0 4px rgba(255,255,255,.3),0 0 22px rgba(255,255,255,.08),inset 0 0 50px rgba(255,255,255,.03)}
+#stage::after{content:"";position:absolute;inset:0;pointer-events:none;background:repeating-linear-gradient(0deg,rgba(255,255,255,.03) 0 1px,transparent 1px 3px)}
+#stage canvas.gl{display:block;width:100%;height:100%}
+#hud{position:absolute;left:14px;top:12px;pointer-events:none;z-index:2}
+#hud .big{font:200 clamp(28px,5vw,46px)/1 "Helvetica Neue",Arial,sans-serif;text-shadow:var(--glow);letter-spacing:.04em}
+#hud .lab{color:var(--mute);font-size:12px}
+#verdict{max-width:34ch;margin-top:8px;text-shadow:0 0 8px rgba(255,255,255,.25);min-height:3.2em}
+#plot{position:absolute;right:12px;bottom:10px;width:min(240px,42%);height:84px;z-index:2;pointer-events:none}
+#plotlab{position:absolute;right:14px;bottom:96px;z-index:2;color:var(--mute);font-size:12px;pointer-events:none}
+.row{display:flex;flex-wrap:wrap;gap:0;margin:18px 0 14px;border:1px solid #9a9a9a;border-radius:3px;overflow:hidden;width:fit-content;max-width:100%;box-shadow:0 0 10px rgba(255,255,255,.07)}
+button{font:inherit;color:#d8d8d8;background:transparent;border:0;border-right:1px solid #444;padding:10px 16px;cursor:pointer;transition:background .15s,text-shadow .15s}
+button:last-child{border-right:0}
+button:hover{background:rgba(255,255,255,.08);color:#fff}
+button.on{background:#d8d8d8;color:#000}
+button:focus-visible,input:focus-visible{outline:2px solid #fff;outline-offset:3px}
+.sl{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+.sl b{text-shadow:0 0 6px rgba(255,255,255,.35);font-weight:600}
+input[type=range]{-webkit-appearance:none;appearance:none;flex:1;min-width:200px;height:2px;background:#8a8a8a;box-shadow:0 0 5px rgba(255,255,255,.18);border-radius:2px}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:#000;border:2px solid #cfcfcf;box-shadow:0 0 7px rgba(255,255,255,.3);cursor:pointer}
+input[type=range]::-moz-range-thumb{width:12px;height:12px;border-radius:50%;background:#000;border:2px solid #cfcfcf;box-shadow:0 0 7px rgba(255,255,255,.3);cursor:pointer}
+.note{color:var(--mute);margin:18px 0 0;max-width:76ch}
+.note b{color:#fff;font-weight:600}
+</style>
+</head>
+<body>
+<main>
+<header>
+<h1>Learning rate</h1>
+<p class="sub">A ball rolls down a loss surface. The learning rate sets the size of each step. Drag to rotate, scroll to zoom.</p>
+</header>
+<div id="stage">
+<div id="hud"><div class="lab">loss</div><div class="big" id="ls">0</div><div class="lab">step <span id="st">0</span></div><div id="verdict"></div></div>
+<div id="plotlab">loss per step (log)</div><canvas id="plot" width="480" height="168"></canvas>
+</div>
+<div class="row">
+<button id="b0">Too small 0.02</button>
+<button id="b1">Smooth 0.15</button>
+<button id="b2">Overshoot 0.33</button>
+<button id="b3">Diverge 0.45</button>
+<button id="rp">Replay</button>
+</div>
+<div class="sl"><label for="lr">Learning rate <b id="lrv">0.15</b></label><input id="lr" type="range" min="0.01" max="0.5" step="0.01" value="0.15"></div>
+<p class="note">Loss <b>L(x, y) = ½(x² + 5y²)</b>, plain batch gradient descent. Overshooting means stepping past the bottom of the valley to the other wall. It is not slower by itself: on this surface 0.33 reaches the bottom in fewer steps than 0.15. The cost shows up at 0.4 and above, where each jump lands higher than the last.</p>
+</main>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function(){
+var stage=document.getElementById('stage');
+var W=stage.clientWidth,H=stage.clientHeight;
+var scene=new THREE.Scene();
+scene.background=new THREE.Color(0x000000);
+scene.fog=new THREE.Fog(0x000000,13,27);
+var camera=new THREE.PerspectiveCamera(42,W/H,0.1,100);
+var renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio||1,2));
+renderer.setSize(W,H);
+renderer.domElement.className='gl';
+stage.insertBefore(renderer.domElement,stage.firstChild);
+
+var K=5,SC=0.25,XM=4,YM=2.5,OUT_X=7,OUT_Y=6;
+function f(x,y){return 0.5*(x*x+K*y*y)}
+function h(x,y){return f(x,y)*SC}
+
+// surface: black solid + glowing white grid that brightens with height
+var geo=new THREE.PlaneGeometry(2*XM,2*YM,64,40);geo.rotateX(-Math.PI/2);
+var pos=geo.attributes.position,cols=new Float32Array(pos.count*3);
+for(var i=0;i<pos.count;i++){var y=h(pos.getX(i),pos.getZ(i));pos.setY(i,y);var t=0.16+0.84*Math.min(y/4.5,1);cols[i*3]=cols[i*3+1]=cols[i*3+2]=t}
+geo.setAttribute('color',new THREE.BufferAttribute(cols,3));
+scene.add(new THREE.Mesh(geo,new THREE.MeshBasicMaterial({color:0x000000,side:THREE.DoubleSide,polygonOffset:true,polygonOffsetFactor:1,polygonOffsetUnits:1})));
+scene.add(new THREE.Mesh(geo,new THREE.MeshBasicMaterial({vertexColors:true,wireframe:true,transparent:true,opacity:0.36})));
+
+// topographic rings on the surface (level sets of the loss)
+[0.4,1,2,3.5,5.5,8,11,15,20,26,33].forEach(function(c){
+  var p=[],a=Math.sqrt(2*c),b=Math.sqrt(2*c/K);
+  for(var k=0;k<=160;k++){var th=k/160*Math.PI*2,px=a*Math.cos(th),py=b*Math.sin(th);
+    if(Math.abs(px)<=XM&&Math.abs(py)<=YM)p.push(new THREE.Vector3(px,c*SC+0.012,py));else if(p.length){p.push(null)}}
+  var seg=[];for(var q=0;q<p.length-1;q++){if(p[q]&&p[q+1]){seg.push(p[q],p[q+1])}}
+  if(seg.length){scene.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(seg),new THREE.LineBasicMaterial({color:0xffffff,transparent:true,opacity:0.55})))}
+});
+
+// dust
+var dg=new THREE.BufferGeometry(),dp=new Float32Array(240*3);
+for(var d=0;d<240;d++){dp[d*3]=(Math.random()-.5)*34;dp[d*3+1]=Math.random()*14-1;dp[d*3+2]=(Math.random()-.5)*34}
+dg.setAttribute('position',new THREE.BufferAttribute(dp,3));
+scene.add(new THREE.Points(dg,new THREE.PointsMaterial({color:0xffffff,size:0.05,transparent:true,opacity:0.5})));
+
+// minimum marker
+var minM=new THREE.Mesh(new THREE.SphereGeometry(0.1,16,16),new THREE.MeshBasicMaterial({color:0xffffff}));
+minM.position.set(0,0.1,0);scene.add(minM);
+var minH=new THREE.Mesh(new THREE.SphereGeometry(0.32,16,16),new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0.09,depthWrite:false,fog:false}));
+minH.position.copy(minM.position);scene.add(minH);
+
+// path
+var MAXS=120,pts=[],tube=null,glowTube=null;
+var tubeMat=new THREE.MeshBasicMaterial({color:0xffffff,fog:false});
+var glowMat=new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0.08,depthWrite:false,fog:false});
+var dropGeo=new THREE.BufferGeometry();
+dropGeo.setAttribute('position',new THREE.BufferAttribute(new Float32Array((MAXS+2)*6),3));dropGeo.setDrawRange(0,0);
+scene.add(new THREE.LineSegments(dropGeo,new THREE.LineBasicMaterial({color:0xffffff,transparent:true,opacity:0.3,fog:false})));
+var ptGeo=new THREE.BufferGeometry();
+ptGeo.setAttribute('position',new THREE.BufferAttribute(new Float32Array((MAXS+2)*3),3));ptGeo.setDrawRange(0,0);
+scene.add(new THREE.Points(ptGeo,new THREE.PointsMaterial({color:0xffffff,size:0.2,fog:false})));
+scene.add(new THREE.Points(ptGeo,new THREE.PointsMaterial({color:0xffffff,size:0.6,transparent:true,opacity:0.09,depthWrite:false,fog:false})));
+var ball=new THREE.Mesh(new THREE.SphereGeometry(0.2,24,24),new THREE.MeshBasicMaterial({color:0xffffff,fog:false}));
+var halo=new THREE.Mesh(new THREE.SphereGeometry(0.55,24,24),new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0.08,depthWrite:false,fog:false}));
+scene.add(ball);scene.add(halo);
+
+function rebuildTube(){
+  if(tube){scene.remove(tube);tube.geometry.dispose();scene.remove(glowTube);glowTube.geometry.dispose();tube=glowTube=null}
+  if(pts.length<2)return;
+  var curve=new THREE.CatmullRomCurve3(pts,false,'centripetal'),seg=Math.max(8,pts.length*6);
+  tube=new THREE.Mesh(new THREE.TubeGeometry(curve,seg,0.04,6,false),tubeMat);
+  glowTube=new THREE.Mesh(new THREE.TubeGeometry(curve,seg,0.14,8,false),glowMat);
+  scene.add(tube);scene.add(glowTube);
+}
+
+// state
+var lr=0.15,x,y,n,running,crossed,losses,last=0;
+var stEl=document.getElementById('st'),lsEl=document.getElementById('ls'),vd=document.getElementById('verdict');
+var plot=document.getElementById('plot'),pc=plot.getContext('2d');
+function drawPlot(){
+  var w=plot.width,hh=plot.height;pc.clearRect(0,0,w,hh);
+  pc.strokeStyle='rgba(255,255,255,.25)';pc.lineWidth=1;pc.strokeRect(.5,.5,w-1,hh-1);
+  var lo=-3,hi=1.5;
+  function Y(v){var l=Math.log10(Math.max(v,1e-3));return hh-6-(Math.min(Math.max(l,lo),hi)-lo)/(hi-lo)*(hh-12)}
+  pc.beginPath();
+  losses.forEach(function(v,i){var px=6+i/MAXS*(w-12);i?pc.lineTo(px,Y(v)):pc.moveTo(px,Y(v))});
+  pc.shadowColor='rgba(255,255,255,.5)';pc.shadowBlur=4;pc.strokeStyle='#dcdcdc';pc.lineWidth=2;pc.stroke();pc.shadowBlur=0}
+function put(i,px,py){
+  var y3=Math.min(h(px,py),9)+0.12,v=new THREE.Vector3(px,y3,py);
+  pts[i]=v;
+  var a=ptGeo.attributes.position.array,d=dropGeo.attributes.position.array;
+  a[i*3]=px;a[i*3+1]=y3;a[i*3+2]=py;
+  d[i*6]=px;d[i*6+1]=y3;d[i*6+2]=py;d[i*6+3]=px;d[i*6+4]=0.01;d[i*6+5]=py;
+  ptGeo.attributes.position.needsUpdate=true;dropGeo.attributes.position.needsUpdate=true;
+  ptGeo.setDrawRange(0,i+1);dropGeo.setDrawRange(0,(i+1)*2);
+  ball.position.copy(v);halo.position.copy(v);rebuildTube()}
+function show(){stEl.textContent=n;lsEl.textContent=f(x,y)<1000?f(x,y).toFixed(2):'∞'}
+function reset(){
+  lr=parseFloat(document.getElementById('lr').value);
+  document.getElementById('lrv').textContent=lr.toFixed(2);
+  x=-3.4;y=2.0;n=0;running=true;crossed=false;vd.textContent='';pts=[];losses=[f(x,y)];
+  put(0,x,y);show();drawPlot();
+  document.querySelectorAll('.row button').forEach(function(b){b.classList.remove('on')});
+  var map={'0.02':'b0','0.15':'b1','0.33':'b2','0.45':'b3'},k=map[lr.toFixed(2)];if(k)document.getElementById(k).classList.add('on');
+}
+function step(){
+  var py=y;x-=lr*x;y-=lr*K*y;n++;
+  if(py*y<0)crossed=true;
+  if(Math.abs(x)>OUT_X||Math.abs(y)>OUT_Y){running=false;put(n,Math.max(-OUT_X,Math.min(OUT_X,x)),Math.max(-OUT_Y,Math.min(OUT_Y,y)));losses.push(f(x,y));show();drawPlot();vd.textContent='Diverged. Every jump lands higher than the last.';return}
+  put(n,x,y);losses.push(f(x,y));show();drawPlot();
+  if(f(x,y)<0.005){running=false;vd.textContent='Reached the bottom in '+n+' steps'+(crossed?', stepping across the valley floor on the way.':'.')}
+  else if(n>=MAXS){running=false;vd.textContent=lr<0.06?'Still far from the bottom after '+MAXS+' steps. The rate is too small.':'Close to the bottom after '+MAXS+' steps.'}
+}
+function setLR(v){document.getElementById('lr').value=v;reset()}
+[['b0',0.02],['b1',0.15],['b2',0.33],['b3',0.45]].forEach(function(p){document.getElementById(p[0]).onclick=function(){setLR(p[1])}});
+document.getElementById('rp').onclick=reset;
+document.getElementById('lr').oninput=reset;
+
+// orbit
+var th=-0.75,ph=0.98,R=13,tgt=new THREE.Vector3(0,1.4,0),drag=false,lx=0,ly=0;
+function cam(){camera.position.set(tgt.x+R*Math.sin(ph)*Math.sin(th),tgt.y+R*Math.cos(ph),tgt.z+R*Math.sin(ph)*Math.cos(th));camera.lookAt(tgt)}
+var el=renderer.domElement;
+el.addEventListener('pointerdown',function(e){drag=true;lx=e.clientX;ly=e.clientY;el.setPointerCapture(e.pointerId);stage.style.cursor='grabbing'});
+el.addEventListener('pointerup',function(){drag=false;stage.style.cursor='grab'});
+el.addEventListener('pointermove',function(e){if(!drag)return;th-=(e.clientX-lx)*0.008;ph=Math.max(0.2,Math.min(1.45,ph-(e.clientY-ly)*0.008));lx=e.clientX;ly=e.clientY});
+el.addEventListener('wheel',function(e){e.preventDefault();R=Math.max(7,Math.min(22,R+e.deltaY*0.01))},{passive:false});
+addEventListener('resize',function(){W=stage.clientWidth;H=stage.clientHeight;renderer.setSize(W,H);camera.aspect=W/H;camera.updateProjectionMatrix()});
+
+reset();cam();
+var still=matchMedia('(prefers-reduced-motion: reduce)').matches;
+function loop(t){requestAnimationFrame(loop);
+  if(running&&t-last>80){last=t;step()}
+  if(!drag&&!still){th+=0.0007}
+  var pulse=1+0.12*Math.sin(t/300);halo.scale.setScalar(pulse);minH.scale.setScalar(pulse);
+  cam();renderer.render(scene,camera)}
+requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
