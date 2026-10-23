@@ -30,4 +30,3 @@ Download `learning-rate-3d.html` and open it in any modern web browser. It needs
 
 - This is a simple, clean example. Real models are much messier, so treat it as a way to build intuition rather than a precise picture of real training.
 - This project was built with Claude, an AI assistant made by Anthropic. I described what I wanted and guided the design, and Claude wrote the code.
-[Learning rate overshooting and undershooting visualization - Claude.html](https://github.com/user-attachments/files/33862533/Learning.rate.overshooting.and.undershooting.visualization.-.Claude.html)
